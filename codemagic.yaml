@@ -14,13 +14,12 @@ workflows:
       app_store_connect: GENIX_ASC_KEY   # Codemagic UI'da eklediğin ASC API key entegrasyonunun ADI
 
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.genixsoft.otel
+      groups:
+        - ios_signing            # Codemagic'te bu grupta: CERTIFICATE_PRIVATE_KEY_B64 (secure)
       vars:
         XCODE_WORKSPACE: "src/Otel PMS.xcworkspace"
         XCODE_SCHEME: "Otel PMS"
-        APP_STORE_APPLE_ID: "0000000000"       # ⚠️ 4) ASC > App Information > Apple ID (sayısal)
+        APP_STORE_APPLE_ID: "6775957889"       # Servis — ASC App Information > Apple ID
       xcode: latest
       cocoapods: default
 
@@ -50,8 +49,16 @@ workflows:
           cd "$POD_DIR"
           pod install --repo-update
 
-      - name: Otomatik imzalama (ASC API key ile profilleri çek/uygula)
+      - name: İmzalama — kendi private key ile cert+profil oluştur
         script: |
+          set -eo pipefail
+          echo "B64 uzunlugu: ${#CERTIFICATE_PRIVATE_KEY_B64}"
+          keychain initialize
+          printf '%s' "$CERTIFICATE_PRIVATE_KEY_B64" | openssl base64 -d -A > /tmp/cert_key.pem
+          echo "PEM boyutu: $(wc -c < /tmp/cert_key.pem) bayt"
+          grep -q "PRIVATE KEY" /tmp/cert_key.pem || { echo "HATA: private key bos/bozuk — Codemagic 'ios_signing' grubu + CERTIFICATE_PRIVATE_KEY_B64 secure degiskenini kontrol et"; exit 1; }
+          app-store-connect fetch-signing-files "com.genixsoft.otel" --type IOS_APP_STORE --certificate-key @file:/tmp/cert_key.pem --create
+          keychain add-certificates
           xcode-project use-profiles
 
       - name: Build numarasını otomatik artır (TestFlight çakışması olmasın)
