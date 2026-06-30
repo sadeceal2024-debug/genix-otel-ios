@@ -3,6 +3,7 @@ import WebKit
 import Speech
 import AVFoundation
 import StoreKit
+import LocalAuthentication
 
 var webView: WKWebView! = nil
 
@@ -281,7 +282,166 @@ extension ViewController: WKScriptMessageHandler {
         if message.name == "iap" {
             handleIAP(message)
         }
+        if message.name == "faceid" {
+            handleFaceId(message)
+        }
   }
+}
+
+// ===== Face ID / Touch ID ile uygulama kilidi =====
+// Web (Ayarlar) -> window.webkit.messageHandlers.faceid.postMessage({action:"enable|disable|status"})
+extension ViewController {
+    func handleFaceId(_ message: WKScriptMessage) {
+        let action = ((message.body as? [String: Any])?["action"] as? String)
+            ?? (message.body as? String) ?? ""
+        switch action {
+        case "enable":
+            BiometricLock.shared.enableWithPrompt { ok in
+                OtelPMS.webView?.evaluateJavaScript("window.gxFaceIdResult && window.gxFaceIdResult(\(ok ? "true" : "false"))", completionHandler: nil)
+            }
+        case "disable":
+            BiometricLock.shared.disable()
+            OtelPMS.webView?.evaluateJavaScript("window.gxFaceIdResult && window.gxFaceIdResult(false)", completionHandler: nil)
+        default: // status
+            let on = BiometricLock.shared.isEnabled
+            OtelPMS.webView?.evaluateJavaScript("window.gxFaceIdResult && window.gxFaceIdResult(\(on ? "true" : "false"))", completionHandler: nil)
+        }
+    }
+}
+
+// ===== Biyometrik kilit yöneticisi =====
+final class BiometricLock {
+    static let shared = BiometricLock()
+    private let key = "gx_faceid_enabled"
+    private var lockWindow: UIWindow?
+    private var authenticating = false
+    private var unlocked = false
+
+    var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: key) }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    /// Web "etkinleştir" dediğinde önce bir kez doğrula; başarılıysa kalıcı aç.
+    func enableWithPrompt(completion: @escaping (Bool) -> Void) {
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
+            completion(false); return
+        }
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Face ID ile uygulama kilidini etkinleştir") { ok, _ in
+            DispatchQueue.main.async {
+                if ok { self.isEnabled = true; self.unlocked = true }
+                completion(ok)
+            }
+        }
+    }
+
+    func disable() {
+        isEnabled = false
+        unlocked = true
+        removeCover()
+    }
+
+    // Scene yaşam döngüsü kancaları
+    func willResignActive() { if isEnabled { showCover() } }
+    func didEnterBackground() { if isEnabled { unlocked = false; showCover() } }
+    func didBecomeActive() {
+        guard isEnabled else { removeCover(); return }
+        if unlocked { removeCover(); return }
+        showCover()
+        authenticate()
+    }
+
+    private func authenticate() {
+        guard !authenticating else { return }
+        authenticating = true
+        let ctx = LAContext()
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else {
+            // Biyometri/şifre yok → kullanıcıyı kilitleme
+            authenticating = false; unlocked = true; removeCover(); return
+        }
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Uygulamayı açmak için kimliğinizi doğrulayın") { ok, _ in
+            DispatchQueue.main.async {
+                self.authenticating = false
+                if ok { self.unlocked = true; self.removeCover() }
+                // başarısız: kapak kalır, kullanıcı "Face ID ile Aç" ile tekrar dener
+            }
+        }
+    }
+
+    private func showCover() {
+        if lockWindow != nil { return }
+        guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState != .unattached }) as? UIWindowScene
+            ?? UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
+        let w = UIWindow(windowScene: scene)
+        w.windowLevel = .alert + 1
+        let vc = LockViewController()
+        vc.onRetry = { [weak self] in self?.authenticate() }
+        w.rootViewController = vc
+        w.makeKeyAndVisible()
+        lockWindow = w
+    }
+
+    private func removeCover() {
+        lockWindow?.isHidden = true
+        lockWindow = nil
+    }
+}
+
+final class LockViewController: UIViewController {
+    var onRetry: (() -> Void)?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(red: 0.043, green: 0.067, blue: 0.125, alpha: 1) // #0b1120
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -32),
+        ])
+
+        let icon = UILabel()
+        icon.text = "🔒"
+        icon.font = .systemFont(ofSize: 52)
+
+        let title = UILabel()
+        title.text = "Genix Otel Takip"
+        title.textColor = .white
+        title.font = .boldSystemFont(ofSize: 20)
+
+        let sub = UILabel()
+        sub.text = "Devam etmek için kimliğinizi doğrulayın"
+        sub.textColor = UIColor(white: 1, alpha: 0.7)
+        sub.font = .systemFont(ofSize: 14)
+        sub.numberOfLines = 0
+        sub.textAlignment = .center
+
+        let btn = UIButton(type: .system)
+        btn.setTitle("Face ID ile Aç", for: .normal)
+        btn.titleLabel?.font = .boldSystemFont(ofSize: 16)
+        btn.setTitleColor(.white, for: .normal)
+        btn.backgroundColor = UIColor(red: 0.176, green: 0.357, blue: 1, alpha: 1) // #2D5BFF
+        btn.layer.cornerRadius = 12
+        btn.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        btn.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        [icon, title, sub, btn].forEach { stack.addArrangedSubview($0) }
+        stack.setCustomSpacing(26, after: sub)
+    }
+
+    @objc private func retryTapped() { onRetry?() }
 }
 
 // ===== AL Komut native konuşma tanıma (SFSpeechRecognizer) =====

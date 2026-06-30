@@ -41,6 +41,8 @@
 		<string>tel</string>
 		<string>mailto</string>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Uygulamayı açarken kimliğinizi Face ID ile doğrulamak için kullanılır.</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
