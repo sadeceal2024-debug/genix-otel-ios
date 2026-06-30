@@ -168,10 +168,9 @@ extension ViewController: WKUIDelegate, WKDownloadDelegate {
                     let safariViewController = SFSafariViewController(url: requestUrl)
                     self.present(safariViewController, animated: true, completion: nil)
                 } else {
-                    // Scheme is not supported or no scheme is given, use openURL
-                    if (UIApplication.shared.canOpenURL(requestUrl)) {
-                        UIApplication.shared.open(requestUrl)
-                    }
+                    // Harici şema (whatsapp:// vb.) — uygulamayı doğrudan aç.
+                    // canOpenURL'e güvenme (LSApplicationQueriesSchemes'te olmasa bile open() çalışır).
+                    UIApplication.shared.open(requestUrl, options: [:], completionHandler: nil)
                 }
             } else {
                 decisionHandler(.cancel)
